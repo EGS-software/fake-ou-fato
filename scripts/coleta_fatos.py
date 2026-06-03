@@ -1,50 +1,68 @@
-import feedparser
+import requests
+from bs4 import BeautifulSoup
 import pandas as pd
-import re
+import time
 
-def limpar_html(texto_bruto):
-    """Remove tags HTML (como <a>, <img>) que costumam vir no resumo do RSS"""
-    limpador = re.compile('<.*?>')
-    return re.sub(limpador, '', texto_bruto).strip()
-
-# 1. Definindo as fontes oficiais (RSS Feeds)
-feeds_oficiais = [
-    "https://g1.globo.com/rss/g1/economia/",
-    "https://www12.senado.leg.br/noticias/feed/todas",
-    "https://www.camara.leg.br/noticias/rss/"
-]
-
-# 2. Filtro de palavras-chave do nosso escopo
-palavras_chave = ['pix', 'golpe', 'fraude', 'banco central', 'taxa', 'mei']
-
-textos_coletados = []
-
-print("Iniciando varredura de RSS...")
-
-# 3. Varrendo cada link de RSS
-for url in feeds_oficiais:
-    feed = feedparser.parse(url)
-    print(f"Lendo: {url} - ({len(feed.entries)} artigos encontrados no feed)")
+def coletar_fatos_google_news(termos, sites_confiaveis):
+    dados = []
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    }
     
-    for artigo in feed.entries:
-        # Juntamos o título e o resumo para ter um texto com mais contexto
-        texto_completo = f"{artigo.title}. {artigo.description}"
-        texto_limpo = limpar_html(texto_completo)
+    for termo in termos:
+        for site in sites_confiaveis:
+            print(f"Buscando notícias reais sobre '{termo}' no site '{site}'...")
+            
+            # Monta a query de busca avançada para o Google News RSS
+            query = f'"{termo}" site:{site}'
+            url = f"https://news.google.com/rss/search?q={query}&hl=pt-BR&gl=BR&ceid=BR:pt-419"
+            
+            try:
+                resposta = requests.get(url, headers=headers)
+                if resposta.status_code == 200:
+                    # O Google News retorna os dados em XML
+                    soup = BeautifulSoup(resposta.content, 'xml')
+                    itens = soup.find_all('item')
+                    
+                    for item in itens:
+                        titulo_completo = item.title.text
+                        
+                        # O Google News costuma colocar " - G1" ou " - Agência Brasil" no fim da manchete.
+                        # O comando rsplit isola a manchete do nome do portal para não sujar os dados.
+                        titulo_limpo = titulo_completo.rsplit(' - ', 1)[0].strip()
+                        
+                        dados.append({
+                            "texto": titulo_limpo,
+                            "classe": "fato"
+                        })
+                time.sleep(2) # Pausa para não sobrecarregar a API
+                
+            except Exception as e:
+                print(f"Erro na busca do termo {termo} no site {site}: {e}")
+                
+    return pd.DataFrame(dados)
+
+# === EXECUÇÃO PRINCIPAL ===
+if __name__ == "__main__":
+    # Termos mais associados ao universo do seu problema
+    termos_busca = ["PIX", "MEI", "Banco Central", "Receita Federal", "Simples Nacional"]
+    
+    # Fontes jornalísticas e governamentais de alta credibilidade
+    sites_oficiais = ["g1.globo.com/economia", "agenciabrasil.ebc.com.br", "gov.br/receitafederal"]
+    
+    df_fatos = coletar_fatos_google_news(termos_busca, sites_oficiais)
+    
+    if not df_fatos.empty:
+        # Remove possíveis manchetes duplicadas (caso dois termos achem a mesma notícia)
+        df_fatos = df_fatos.drop_duplicates(subset=['texto']).reset_index(drop=True)
         
-        # 4. Verificando se o artigo pertence ao nosso tema
-        texto_minusculo = texto_limpo.lower()
-        if any(palavra in texto_minusculo for palavra in palavras_chave):
-            textos_coletados.append({
-                'Texto': texto_limpo,
-                'Classe': 'Fato'
-            })
-
-# 5. Criando o DataFrame e exportando
-if textos_coletados:
-    df_fatos = pd.DataFrame(textos_coletados)
-    
-    # Exporta para CSV, pronto para o Weka ou Scikit-Learn
-    df_fatos.to_csv('base_fatos_pix.csv', index=False, encoding='utf-8')
-    print(f"\nSucesso! {len(df_fatos)} textos reais sobre Pix/Golpes foram salvos em 'base_fatos_pix.csv'.")
-else:
-    print("\nNenhum artigo recente com as palavras-chave foi encontrado nestes feeds de hoje.")
+        # Exporta o CSV
+        nome_arquivo = "base_fatos.csv"
+        df_fatos.to_csv(nome_arquivo, index=False, encoding='utf-8-sig')
+        
+        print(f"\nSucesso! {len(df_fatos)} manchetes verdadeiras coletadas.")
+        print(f"Arquivo '{nome_arquivo}' salvo.")
+        print("\nAmostra dos fatos coletados:")
+        print(df_fatos.head())
+    else:
+        print("\nNenhum dado encontrado.")
